@@ -24,6 +24,7 @@ from strategy.ict_signals import ICTSignalDetector, SignalGrade
 from strategy.position_calculator import PositionCalculator
 from strategy.risk_manager import RiskManager
 from utils.logger import get_logger, setup_logging
+from utils.notifier import init_notifier, notify_bot_start, notify_risk_event, notify_trade_result
 from utils.time_utils import SessionManager
 
 # ── Bootstrap ─────────────────────────────────────────────────────────────────
@@ -43,6 +44,7 @@ def bootstrap() -> dict:
         max_bytes=log_cfg["max_bytes"],
         backup_count=log_cfg["backup_count"],
     )
+    init_notifier()
     return cfg
 
 
@@ -51,9 +53,8 @@ logger = None   # initialized after bootstrap
 
 # ── Bot core ──────────────────────────────────────────────────────────────────
 
-SCAN_INTERVAL_SECONDS = 60      # check for signals every 60 s inside the window
-OFF_HOURS_SLEEP = 30            # poll interval outside trading window
-
+SCAN_INTERVAL_SECONDS = 60         # check for signals every 60 s inside the window
+OFF_HOURS_SLEEP = 30               # poll interval outside trading window
 OPEN_POSITION_CHECK_INTERVAL = 10  # monitor open positions every 10 s
 
 
@@ -142,7 +143,7 @@ class TradingBot:
     # ── Position monitor loop ─────────────────────────────────────────────────
 
     def _monitor_position(self, plan):
-        """Wait for position to close (SL or TP hit), then record the trade."""
+        """Wait for position to close (SL or TP hit), record trade, send notification."""
         logger.info("Monitoring open position...")
         while True:
             time.sleep(OPEN_POSITION_CHECK_INTERVAL)
@@ -162,10 +163,30 @@ class TradingBot:
             unrealized = float(pos.get("unrealizedPnl", 0))
             logger.debug(f"Position open | unrealized PnL: {unrealized:.4f} USDT")
 
-        # Fetch realized PnL from last trade (approximate via income history or balance diff)
+        # Calculate realized PnL (balance diff)
         new_balance = self._safe_balance()
         realized_pnl = new_balance - plan.capital_usdt
         logger.info(f"Realized PnL ≈ {realized_pnl:+.4f} USDT")
+
+        # Determine approximate exit price from PnL
+        if realized_pnl >= 0:
+            exit_price = plan.take_profit
+        else:
+            exit_price = plan.stop_loss
+
+        # ── Telegram notification (win or loss) ───────────────────────────────
+        notify_trade_result(
+            direction=plan.direction,
+            symbol=plan.symbol,
+            entry_price=plan.entry_price,
+            exit_price=exit_price,
+            qty=plan.qty,
+            pnl_usdt=realized_pnl,
+            capital_usdt=new_balance,
+            sl=plan.stop_loss,
+            tp=plan.take_profit,
+        )
+
         self.risk.record_trade(realized_pnl)
         self.calc.update_capital(new_balance)
         return realized_pnl
@@ -180,6 +201,7 @@ class TradingBot:
             can, reason = self.risk.can_trade()
             if not can:
                 logger.info(f"Cannot trade: {reason}")
+                notify_risk_event(f"無法交易：{reason}")
                 return
 
             # Market data
@@ -192,9 +214,7 @@ class TradingBot:
 
             # Signal evaluation
             signal = self.signals.evaluate(df_htf, df_ltf)
-            logger.info(
-                f"Signal: {signal.grade.value} | {signal.reason}"
-            )
+            logger.info(f"Signal: {signal.grade.value} | {signal.reason}")
 
             if signal.grade == SignalGrade.A:
                 current_balance = self._safe_balance() or self.risk.state.capital_usdt
@@ -202,8 +222,19 @@ class TradingBot:
 
                 if self.dry_run:
                     logger.info("[DRY-RUN] Simulating trade close")
-                    # Simulate a win for dry-run (log only)
-                    self.risk.record_trade(plan.expected_profit_net)
+                    sim_pnl = plan.expected_profit_net
+                    self.risk.record_trade(sim_pnl)
+                    notify_trade_result(
+                        direction=plan.direction,
+                        symbol=plan.symbol,
+                        entry_price=plan.entry_price,
+                        exit_price=plan.take_profit,
+                        qty=plan.qty,
+                        pnl_usdt=sim_pnl,
+                        capital_usdt=self.risk.state.capital_usdt,
+                        sl=plan.stop_loss,
+                        tp=plan.take_profit,
+                    )
                     return
 
                 # Block until position closes
@@ -225,6 +256,12 @@ class TradingBot:
         logger.info("=" * 50)
         logger.info(self.risk.status_summary())
 
+        notify_bot_start(
+            symbol=self.exchange.symbol,
+            capital=self.risk.state.capital_usdt,
+            dry_run=self.dry_run,
+        )
+
         while True:
             try:
                 self.session.log_status()
@@ -235,6 +272,7 @@ class TradingBot:
                     logger.warning("Force-close time – closing all positions")
                     if not self.dry_run:
                         self.exchange.close_all_positions()
+                    notify_risk_event("04:00 強制平倉執行")
                     time.sleep(60)
                     continue
 
