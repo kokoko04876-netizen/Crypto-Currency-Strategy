@@ -1,0 +1,90 @@
+# ─────────────────────────────────────────────
+#  ICT Silver Bullet Automated Trading Bot
+#  Strategy: A-Grade Signals Only (OB+FVG+OTE)
+# ─────────────────────────────────────────────
+
+trading:
+  symbol: "BTC/USDT:USDT"        # Futures pair
+  leverage: 1                     # 1x leverage (no liquidation risk)
+  capital_usdt: 30.0              # Total allocated capital
+  risk_per_trade: 0.01            # 1% risk per trade
+  stop_loss_pct: 0.01             # 1.0% stop loss
+  take_profit_pct: 0.025          # 2.5% take profit (RR 1:2.5)
+  maker_fee: 0.0002               # 0.02% Maker fee (adjust per exchange)
+  taker_fee: 0.0005               # 0.05% Taker fee
+
+# Session windows (UTC+8 / Taiwan time)
+sessions:
+  # Pre-market preparation window (no trading)
+  pre_market:
+    start: "20:00"
+    end: "21:30"
+
+  # Macro observation window (no entry allowed)
+  macro_window:
+    start: "21:30"
+    end: "22:00"
+
+  # Silver Bullet window (A-grade entries only)
+  silver_bullet:
+    start: "22:00"
+    end: "23:00"
+
+  # Force-close all positions
+  force_close: "04:00"
+
+  timezone: "Asia/Taipei"         # UTC+8
+
+# ICT Signal detection parameters
+signals:
+  # Higher timeframe for structure (OB, FVG)
+  htf_timeframe: "1h"
+  # Entry timeframe for trigger (CISD, Turtle Soup)
+  ltf_timeframe: "5m"
+  # Candles to fetch for analysis
+  lookback_candles: 100
+
+  # Order Block detection
+  ob:
+    min_impulse_pct: 0.003        # Minimum 0.3% impulse to form OB
+    max_ob_age_candles: 50        # OB expires after 50 candles
+
+  # Fair Value Gap detection
+  fvg:
+    min_gap_pct: 0.001            # Minimum 0.1% gap size
+
+  # OTE (Optimal Trade Entry) Fibonacci levels
+  ote:
+    fib_level: 0.705              # Primary OTE level
+    fib_low: 0.62                 # OTE zone lower bound
+    fib_high: 0.79                # OTE zone upper bound
+
+  # A-grade: OB + FVG + OTE all required
+  # B-grade: only 2 of 3 conditions (skip)
+  # C-grade: 1 or 0 conditions (ignore)
+  min_conditions_for_a_grade: 3
+
+# Risk management rules
+risk:
+  max_trades_per_day: 1           # Max 1 trade per day
+  stop_after_daily_loss: 1        # Stop night after N losses
+  consecutive_loss_days_limit: 2  # Stop 3 days after N consecutive losing nights
+  consecutive_loss_pause_days: 3  # Days to pause after hitting limit
+  monthly_profit_target_pct: 0.10 # +10% = stop and rest
+
+  # Conservative / Survival mode triggers
+  survival_mode:
+    enabled: false                # Start in normal mode
+    capital_threshold_usdt: 21.0  # Force survival if capital < 21 USDT
+    # Survival mode: only Silver Bullet, no other sessions
+
+# State persistence
+state:
+  file: "data/bot_state.json"
+
+# Logging
+logging:
+  level: "INFO"                   # DEBUG / INFO / WARNING / ERROR
+  file: "data/trading_bot.log"
+  max_bytes: 10485760             # 10 MB
+  backup_count: 5
