@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint & Syntax Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install flake8
+
+      - name: Lint with flake8 (errors only)
+        run: |
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Lint with flake8 (style warnings)
+        run: |
+          flake8 . --count --max-line-length=120 --statistics --exit-zero
+
+      - name: Validate config.yaml
+        run: python -c "import yaml; yaml.safe_load(open('config.yaml'))"
+
+      - name: Check module imports
+        env:
+          EXCHANGE_NAME: binance
+          API_KEY: dummy_key
+          API_SECRET: dummy_secret
+          SYMBOL: BTC/USDT:USDT
+          TELEGRAM_BOT_TOKEN: dummy_token
+          TELEGRAM_CHAT_ID: "0"
+        run: |
+          python -c "from utils.logger import *"
+          python -c "from utils.time_utils import *"
+          python -c "from strategy.position_calculator import *"
+          python -c "from strategy.risk_manager import *"
