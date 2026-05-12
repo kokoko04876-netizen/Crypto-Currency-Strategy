@@ -1,82 +1,114 @@
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
 #  ICT Silver Bullet Automated Trading Bot
-#  Strategy: A-Grade Signals Only (OB+FVG+OTE)
-# ─────────────────────────────────────────────
+#  Full Strategy: 7-Element A-Grade Signal System
+# ─────────────────────────────────────────────────────────────────
 
 trading:
   symbol: "BTC/USDT:USDT"        # Futures pair
+  smt_symbol: "ETH/USDT:USDT"    # SMT divergence pair
   leverage: 1                     # 1x leverage (no liquidation risk)
   capital_usdt: 30.0              # Total allocated capital
   risk_per_trade: 0.01            # 1% risk per trade
   stop_loss_pct: 0.01             # 1.0% stop loss
   take_profit_pct: 0.02           # 2.0% take profit (RR 1:2)
-  maker_fee: 0.0002               # 0.02% Maker fee (adjust per exchange)
+  maker_fee: 0.0002               # 0.02% Maker fee
   taker_fee: 0.0005               # 0.05% Taker fee
 
 # Session windows (UTC+8 / Taiwan time)
 sessions:
-  # Pre-market preparation window (no trading)
+  # Layer 1: Pre-market preparation (no trading)
   pre_market:
     start: "20:00"
-    end: "21:30"
+    end: "20:30"
 
-  # Macro observation window (no entry allowed)
-  macro_window:
-    start: "21:30"
+  # Layer 2: Mid-session observation (structure + liquidity)
+  mid_session:
+    start: "20:30"
     end: "22:00"
 
-  # Silver Bullet window (A-grade entries only)
+  # Layer 3: Silver Bullet entry window (22:00–00:00 Taiwan = 10:00–12:00 EST)
   silver_bullet:
     start: "22:00"
-    end: "23:00"
+    end: "00:00"                  # midnight cutoff — no A-grade after 00:00
 
-  # Force-close all positions
+  # Force-close all positions at 04:00
   force_close: "04:00"
 
   timezone: "Asia/Taipei"         # UTC+8
 
-# ICT Signal detection parameters
+# ── 5.1 HTF Bias parameters ───────────────────────────────────────
+htf_bias:
+  timeframe_4h: "4h"
+  timeframe_daily: "1d"
+  lookback: 50
+  ma_periods: [7, 14, 28]
+  min_consecutive_candles: 2      # need ≥2 4H candles same direction
+
+# ── 5.2 Premium / Discount zone ──────────────────────────────────
+premium_discount:
+  lookback_candles: 50            # swing range for midline calculation
+  strong_zone_pct: 0.05           # 5% from midline = strong premium/discount
+
+# ── 5.3 MTF POI 4-resonance signal detection ─────────────────────
 signals:
-  # Higher timeframe for structure (OB, FVG)
   htf_timeframe: "1h"
-  # Entry timeframe for trigger (CISD, Turtle Soup)
   ltf_timeframe: "5m"
-  # Candles to fetch for analysis
   lookback_candles: 100
 
-  # Order Block detection
+  # A-grade = 4 resonances, B = 3, C ≤ 2 (skip)
+  a_grade_resonances: 4
+  b_grade_resonances: 3
+
+  # Order Block (OB)
   ob:
-    min_impulse_pct: 0.003        # Minimum 0.3% impulse to form OB
-    max_ob_age_candles: 50        # OB expires after 50 candles
+    min_impulse_pct: 0.003
+    max_ob_age_candles: 50
 
-  # Fair Value Gap detection
+  # Fair Value Gap (FVG)
   fvg:
-    min_gap_pct: 0.001            # Minimum 0.1% gap size
+    min_gap_pct: 0.001
 
-  # OTE (Optimal Trade Entry) Fibonacci levels
+  # OTE Fibonacci zone (0.618–0.79, ideal 0.705)
   ote:
-    fib_level: 0.705              # Primary OTE level
-    fib_low: 0.62                 # OTE zone lower bound
-    fib_high: 0.79                # OTE zone upper bound
+    fib_level: 0.705
+    fib_low: 0.618
+    fib_high: 0.79
 
-  # A-grade: OB + FVG + OTE all required
-  # B-grade: only 2 of 3 conditions (skip)
-  # C-grade: 1 or 0 conditions (ignore)
-  min_conditions_for_a_grade: 3
+  # Volume Profile (simplified — bins across OHLCV data)
+  volume_profile:
+    bins: 50                      # price bins
+    value_area_pct: 0.70          # 70% of volume = value area
 
-# Risk management rules
+# ── 5.4 Liquidity structure ───────────────────────────────────────
+liquidity:
+  lookback_candles: 30
+  equal_level_tolerance_pct: 0.001
+  sweep_return_candles: 3
+
+# ── 5.5 LTF triggers (need ≥ 2) ──────────────────────────────────
+ltf_triggers:
+  min_triggers_required: 2
+  ltf_fvg_min_gap_pct: 0.0005
+
+# ── 5.7 News filter & SMT ─────────────────────────────────────────
+news:
+  block_window_hours: 4             # ±4H around FOMC/CPI
+  events_file: "data/news_events.json"
+
+smt:
+  enabled: true
+  lookback_candles: 10
+
+# ── Risk management ───────────────────────────────────────────────
 risk:
-  max_trades_per_day: 1           # Max 1 trade per day
-  stop_after_daily_loss: 1        # Stop night after N losses
-  consecutive_loss_days_limit: 2  # Stop 3 days after N consecutive losing nights
-  consecutive_loss_pause_days: 3  # Days to pause after hitting limit
-  monthly_profit_target_pct: 0.10 # +10% = stop and rest
-
-  # Conservative / Survival mode triggers
+  max_trades_per_day: 1
+  stop_after_daily_loss: 1
+  consecutive_loss_days_limit: 2
+  consecutive_loss_pause_days: 3
+  monthly_profit_target_pct: 0.10
   survival_mode:
-    enabled: false                # Start in normal mode
-    capital_threshold_usdt: 21.0  # Force survival if capital < 21 USDT
-    # Survival mode: only Silver Bullet, no other sessions
+    enabled: false
+    capital_threshold_usdt: 21.0
 
 # State persistence
 state:
@@ -84,7 +116,7 @@ state:
 
 # Logging
 logging:
-  level: "INFO"                   # DEBUG / INFO / WARNING / ERROR
+  level: "INFO"
   file: "data/trading_bot.log"
-  max_bytes: 10485760             # 10 MB
+  max_bytes: 10485760
   backup_count: 5

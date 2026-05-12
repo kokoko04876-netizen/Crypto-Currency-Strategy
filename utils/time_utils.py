@@ -1,10 +1,11 @@
 """
 Trading session time utilities.
-All times in the config are expressed in Taiwan time (Asia/Taipei, UTC+8).
+All times in config are Taiwan time (Asia/Taipei, UTC+8).
+Silver Bullet: 22:00–00:00 (crosses midnight).
 """
 from __future__ import annotations
 
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from utils.logger import get_logger
@@ -12,27 +13,33 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def _now_local(tz_name: str) -> datetime:
-    return datetime.now(ZoneInfo(tz_name))
-
-
 def _parse_time(t: str) -> time:
-    """Parse "HH:MM" string to time object."""
     h, m = t.split(":")
     return time(int(h), int(m))
+
+
+def _between(now: time, start: time, end: time) -> bool:
+    """Handle ranges that cross midnight (e.g. 22:00–00:00)."""
+    if start == end:
+        return False
+    if end == time(0, 0):
+        return now >= start
+    if start < end:
+        return start <= now < end
+    return now >= start or now < end
 
 
 class SessionManager:
     def __init__(self, config: dict):
         sess = config["sessions"]
         self.tz = ZoneInfo(sess.get("timezone", "Asia/Taipei"))
-        self.pre_market_start = _parse_time(sess["pre_market"]["start"])
-        self.pre_market_end = _parse_time(sess["pre_market"]["end"])
-        self.macro_start = _parse_time(sess["macro_window"]["start"])
-        self.macro_end = _parse_time(sess["macro_window"]["end"])
-        self.sb_start = _parse_time(sess["silver_bullet"]["start"])
-        self.sb_end = _parse_time(sess["silver_bullet"]["end"])
-        self.force_close_time = _parse_time(sess["force_close"])
+        self.pre_market_start  = _parse_time(sess["pre_market"]["start"])
+        self.pre_market_end    = _parse_time(sess["pre_market"]["end"])
+        self.mid_session_start = _parse_time(sess["mid_session"]["start"])
+        self.mid_session_end   = _parse_time(sess["mid_session"]["end"])
+        self.sb_start          = _parse_time(sess["silver_bullet"]["start"])
+        self.sb_end            = _parse_time(sess["silver_bullet"]["end"])
+        self.force_close_time  = _parse_time(sess["force_close"])
 
     def now(self) -> datetime:
         return datetime.now(self.tz)
@@ -40,57 +47,37 @@ class SessionManager:
     def current_time(self) -> time:
         return self.now().time()
 
-    def _between(self, t: time, start: time, end: time) -> bool:
-        if start <= end:
-            return start <= t < end
-        # crosses midnight
-        return t >= start or t < end
-
     def is_pre_market(self) -> bool:
-        return self._between(self.current_time(), self.pre_market_start, self.pre_market_end)
+        return _between(self.current_time(), self.pre_market_start, self.pre_market_end)
 
-    def is_macro_window(self) -> bool:
-        return self._between(self.current_time(), self.macro_start, self.macro_end)
+    def is_mid_session(self) -> bool:
+        return _between(self.current_time(), self.mid_session_start, self.mid_session_end)
 
     def is_silver_bullet(self) -> bool:
-        return self._between(self.current_time(), self.sb_start, self.sb_end)
+        return _between(self.current_time(), self.sb_start, self.sb_end)
 
     def is_force_close(self) -> bool:
-        """True within 1 minute of the force-close time."""
         now = self.current_time()
         fc = self.force_close_time
-        # within the same minute
         return now.hour == fc.hour and now.minute == fc.minute
 
     def is_after_force_close(self) -> bool:
-        now = self.current_time()
-        fc = self.force_close_time
-        if fc.hour == 0 and fc.minute == 0:
-            return False
-        return now >= fc
+        return self.current_time() >= self.force_close_time
 
     def current_session(self) -> str:
-        if self.is_pre_market():
-            return "pre_market"
-        if self.is_macro_window():
-            return "macro_window"
-        if self.is_silver_bullet():
-            return "silver_bullet"
+        if self.is_pre_market(): return "pre_market"
+        if self.is_mid_session(): return "mid_session"
+        if self.is_silver_bullet(): return "silver_bullet"
         return "off_hours"
 
     def seconds_until_silver_bullet(self) -> float:
-        """Seconds until Silver Bullet window opens. 0 if already in window."""
         if self.is_silver_bullet():
             return 0.0
-        now = self.now()
-        target = now.replace(
-            hour=self.sb_start.hour, minute=self.sb_start.second, second=0, microsecond=0
-        )
-        if target <= now:
-            from datetime import timedelta
+        now_dt = self.now()
+        target = now_dt.replace(hour=self.sb_start.hour, minute=self.sb_start.minute, second=0, microsecond=0)
+        if target <= now_dt:
             target += timedelta(days=1)
-        return (target - now).total_seconds()
+        return (target - now_dt).total_seconds()
 
     def log_status(self):
-        session = self.current_session()
-        logger.info(f"Session: {session} | Local time: {self.now().strftime('%H:%M:%S %Z')}")
+        logger.info(f"Session: {self.current_session()} | Local: {self.now().strftime('%H:%M:%S %Z')}")
