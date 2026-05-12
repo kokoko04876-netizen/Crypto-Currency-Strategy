@@ -156,6 +156,19 @@ class ExchangeClient:
         for pos in self.get_positions():
             self.close_position(pos)
 
+    # ── Withdrawal safeguard ──────────────────────────────────────────────────
+
+    def withdraw(self, *args, **kwargs):
+        """Blocked: automatic withdrawals are disabled by policy."""
+        raise PermissionError(
+            "自動出金已被永久禁止 (Automatic withdrawal is permanently disabled)."
+        )
+
+    def transfer(self, *args, **kwargs):
+        raise PermissionError(
+            "自動轉帳已被永久禁止 (Automatic transfer is permanently disabled)."
+        )
+
     # ── Retry helper ──────────────────────────────────────────────────────────
 
     def with_retry(self, fn, retries: int = 3, delay: float = 2.0):

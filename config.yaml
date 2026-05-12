@@ -9,7 +9,7 @@ trading:
   capital_usdt: 30.0              # Total allocated capital
   risk_per_trade: 0.01            # 1% risk per trade
   stop_loss_pct: 0.01             # 1.0% stop loss
-  take_profit_pct: 0.025          # 2.5% take profit (RR 1:2.5)
+  take_profit_pct: 0.02           # 2.0% take profit (RR 1:2)
   maker_fee: 0.0002               # 0.02% Maker fee (adjust per exchange)
   taker_fee: 0.0005               # 0.05% Taker fee
 
