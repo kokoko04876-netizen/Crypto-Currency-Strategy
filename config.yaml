@@ -25,11 +25,12 @@ sessions:
     start: "20:30"
     end: "22:00"
 
-  silver_bullet:                  # 層次3：進場窗口 22:00–00:00
-    start: "22:00"
-    end: "00:00"                  # 台灣時間 = 紐約 10:00–12:00 EST
+  silver_bullet:                  # ICT Silver Bullet = 紐約 10:00–11:00（程式用 NY 時區判斷）
+    start: "22:00"                # 夏令（EDT UTC-4）：台灣 22:00–23:00
+    end: "23:00"                  # 冬令（EST UTC-5）：台灣 23:00–00:00
 
-  force_close: "04:00"            # 強制平倉所有倉位
+  no_new_entry_after: "02:00"     # 02:00 後不開新倉（安全閥）
+  force_close: "04:00"            # 強制平倉所有倉位（對應紐約 16:00 EDT / 15:00 EST）
   timezone: "Asia/Taipei"
 
 # ── 5.1 HTF Bias ─────────────────────────────────────────────────

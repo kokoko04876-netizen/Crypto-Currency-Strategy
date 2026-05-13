@@ -13,6 +13,10 @@ Risk management engine — SMC 30U 紐約盤保守版 v5.3
   ≤ 15U → 停手 3 天（橘線）
   ≤  9U → 停手 7 天（紅線）
   =  0U → 當月停手（黑線）
+
+月度獲利提醒：
+  +20% (36U) → 提示提取超額
+  +50% (45U) → 提示提取 15U 至冷錢包
 """
 from __future__ import annotations
 
@@ -44,8 +48,8 @@ class BotState:
     monthly_pnl_usdt: float = 0.0
     monthly_trades: int = 0
 
-    paused_until: Optional[str] = None       # ISO date
-    paused_until_datetime: Optional[str] = None  # ISO datetime (for hour-level pauses)
+    paused_until: Optional[str] = None           # ISO date
+    paused_until_datetime: Optional[str] = None  # ISO datetime (hour-level)
     survival_mode: bool = False
 
     today: str = ""
@@ -56,6 +60,10 @@ class BotState:
     consecutive_loss_nights: int = 0
     history: list[DailyRecord] = field(default_factory=list)
 
+    # Monthly profit-level alerts (reset each month)
+    profit_alert_20pct: bool = False
+    profit_alert_50pct: bool = False
+
     def to_dict(self) -> dict:
         d = asdict(self)
         d["history"] = [asdict(r) for r in self.history]
@@ -64,6 +72,9 @@ class BotState:
     @classmethod
     def from_dict(cls, d: dict) -> "BotState":
         history = [DailyRecord(**r) for r in d.pop("history", [])]
+        # Tolerate old state files missing newer fields
+        valid = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
+        d = {k: v for k, v in d.items() if k in valid}
         obj = cls(**d)
         obj.history = history
         return obj
@@ -115,7 +126,6 @@ class RiskManager:
             if len(self.state.history) > 30:
                 self.state.history = self.state.history[-30:]
 
-            # Track consecutive losing nights
             if self.state.daily_losses > 0 and self.state.daily_pnl_usdt < 0:
                 self.state.consecutive_loss_nights += 1
                 self._apply_loss_night_rules()
@@ -156,11 +166,18 @@ class RiskManager:
         cap = self.state.capital_usdt
         dl = self.risk_cfg.get("drawdown_levels", {})
 
-        red_usdt = dl.get("red_usdt", 9.0)
+        red_usdt    = dl.get("red_usdt", 9.0)
         orange_usdt = dl.get("orange_usdt", 15.0)
         yellow_usdt = dl.get("yellow_usdt", 21.0)
 
-        if cap <= red_usdt and cap > 0:
+        # Black line — capital at or below zero
+        if cap <= 0:
+            msg = "⚫ 黑線：資金歸零 → 當月停手，執行四週回測協議"
+            logger.critical(msg)
+            notify_risk_event(msg)
+            return
+
+        if cap <= red_usdt:
             pause_days = dl.get("red_pause_days", 7)
             until = (date.today() + timedelta(days=pause_days)).isoformat()
             if not self.state.paused_until or self.state.paused_until < until:
@@ -187,11 +204,31 @@ class RiskManager:
                 logger.warning(msg)
                 notify_risk_event(msg)
 
-        # Activation of survival mode
+        # Survival mode
         threshold = self.risk_cfg["survival_mode"]["capital_threshold_usdt"]
         if cap < threshold and not self.state.survival_mode:
             self.state.survival_mode = True
             notify_risk_event(f"⚠️ 生存模式啟動：資金 {cap:.2f}U < {threshold}U")
+
+    # ── Monthly profit alerts（8.3）───────────────────────────
+
+    def _check_monthly_targets(self):
+        cap   = self.state.capital_usdt
+        start = self.state.monthly_start_capital
+        if start <= 0:
+            return
+        gain = (cap - start) / start
+
+        if gain >= 0.50 and not self.state.profit_alert_50pct:
+            self.state.profit_alert_50pct = True
+            notify_risk_event(
+                f"💰 月度資金達 {cap:.2f}U (+{gain:.0%}) → 建議提取 15U 至冷錢包"
+            )
+        elif gain >= 0.20 and not self.state.profit_alert_20pct:
+            self.state.profit_alert_20pct = True
+            notify_risk_event(
+                f"✅ 月度資金達 {cap:.2f}U (+{gain:.0%}) → 建議提取超額部分"
+            )
 
     # ── can_trade ────────────────────────────────────────────────
 
@@ -244,6 +281,7 @@ class RiskManager:
             self.state.daily_losses += 1
 
         self._check_drawdown()
+        self._check_monthly_targets()
         self.save_state()
 
         result = "WIN ✅" if pnl_usdt >= 0 else "LOSS ❌"
@@ -258,6 +296,8 @@ class RiskManager:
         self.state.monthly_pnl_usdt = 0.0
         self.state.monthly_trades = 0
         self.state.survival_mode = False
+        self.state.profit_alert_20pct = False
+        self.state.profit_alert_50pct = False
         self.save_state()
         logger.info("Monthly stats reset")
 

@@ -159,8 +159,12 @@ class TradingBot:
         return pnl
 
     def _silver_bullet_loop(self):
-        logger.info("▶ Silver Bullet 22:00–00:00 | scanning...")
+        ny_str = self.session.now_ny().strftime('%H:%M %Z')
+        logger.info(f"▶ Silver Bullet | NY: {ny_str} | scanning...")
         while self.session.is_silver_bullet():
+            if self.session.is_after_no_new_entry():
+                logger.info("02:00 後不開新倉 — 停止揃描")
+                return
             can, reason = self.risk.can_trade()
             if not can:
                 logger.info(f"Cannot trade: {reason}")
