@@ -2,9 +2,9 @@
 Trading session time utilities.
 All times in config are Taiwan time (Asia/Taipei, UTC+8).
 
-Silver Bullet = ICT 10:00–11:00 New York local time (DST-aware):
-  Summer (EDT, UTC-4): 22:00–23:00 Taiwan
-  Winter (EST, UTC-5): 23:00–00:00 Taiwan
+Silver Bullet = ICT 10:00–12:00 New York local time (DST-aware):
+  Summer (EDT, UTC-4): 22:00–00:00 Taiwan
+  Winter (EST, UTC-5): 23:00–01:00 Taiwan
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ logger = get_logger(__name__)
 
 _NY_TZ       = ZoneInfo("America/New_York")
 _SB_NY_START = time(10, 0)
-_SB_NY_END   = time(11, 0)
+_SB_NY_END   = time(12, 0)
 
 
 def _parse_time(t: str) -> time:
@@ -63,7 +63,7 @@ class SessionManager:
         return _between(self.current_time(), self.mid_session_start, self.mid_session_end)
 
     def is_silver_bullet(self) -> bool:
-        """True when NY local time is 10:00–11:00 — handles EDT/EST automatically."""
+        """True when NY local time is 10:00–12:00 — handles EDT/EST automatically."""
         return _SB_NY_START <= self.now_ny().time() < _SB_NY_END
 
     def is_force_close(self) -> bool:
