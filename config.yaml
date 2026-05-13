@@ -1,90 +1,119 @@
-# ─────────────────────────────────────────────
-#  ICT Silver Bullet Automated Trading Bot
-#  Strategy: A-Grade Signals Only (OB+FVG+OTE)
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
+#  ICT Silver Bullet Automated Trading Bot  v5.3
+#  Strategy: SMC 30U 紐約盤保守版
+# ─────────────────────────────────────────────────────────────────
 
 trading:
-  symbol: "BTC/USDT:USDT"        # Futures pair
-  leverage: 1                     # 1x leverage (no liquidation risk)
-  capital_usdt: 30.0              # Total allocated capital
-  risk_per_trade: 0.01            # 1% risk per trade
-  stop_loss_pct: 0.01             # 1.0% stop loss
-  take_profit_pct: 0.02           # 2.0% take profit (RR 1:2)
-  maker_fee: 0.0002               # 0.02% Maker fee (adjust per exchange)
-  taker_fee: 0.0005               # 0.05% Taker fee
+  symbol: "BTC/USDT:USDT"
+  smt_symbol: "ETH/USDT:USDT"
+  leverage: 1
+  capital_usdt: 30.0
+  risk_per_trade: 0.01            # 1% risk = 0.30 USDT
+  stop_loss_pct: 0.01             # 1.0% SL
+  take_profit_pct: 0.025          # 2.5% TP → 真實盈虧比 ≈ 2.28:1
+  maker_fee: 0.0002
+  taker_fee: 0.0005
+  min_rr_ratio: 2.5               # 盈虧比 < 2.5 不進場
 
-# Session windows (UTC+8 / Taiwan time)
+# ── 交易時段（台灣時間 UTC+8）────────────────────────────────────
 sessions:
-  # Pre-market preparation window (no trading)
-  pre_market:
+  pre_market:                     # 層次1：盤前準備（只觀察）
     start: "20:00"
-    end: "21:30"
+    end: "20:30"
 
-  # Macro observation window (no entry allowed)
-  macro_window:
-    start: "21:30"
+  mid_session:                    # 層次2：盤中觀察（只觀察）
+    start: "20:30"
     end: "22:00"
 
-  # Silver Bullet window (A-grade entries only)
-  silver_bullet:
+  silver_bullet:                  # 層次3：進場窗口 22:00–00:00
     start: "22:00"
-    end: "23:00"
+    end: "00:00"                  # 台灣時間 = 紐約 10:00–12:00 EST
 
-  # Force-close all positions
-  force_close: "04:00"
+  force_close: "04:00"            # 強制平倉所有倉位
+  timezone: "Asia/Taipei"
 
-  timezone: "Asia/Taipei"         # UTC+8
+# ── 5.1 HTF Bias ─────────────────────────────────────────────────
+htf_bias:
+  timeframe_4h: "4h"
+  timeframe_daily: "1d"
+  lookback: 50
+  ma_periods: [7, 14, 28]
+  min_consecutive_candles: 2
 
-# ICT Signal detection parameters
+# ── 5.2 Premium / Discount ───────────────────────────────────────
+premium_discount:
+  lookback_candles: 50
+  strong_zone_pct: 0.05
+
+# ── 5.3 MTF POI 4× Resonance ─────────────────────────────────────
 signals:
-  # Higher timeframe for structure (OB, FVG)
   htf_timeframe: "1h"
-  # Entry timeframe for trigger (CISD, Turtle Soup)
   ltf_timeframe: "5m"
-  # Candles to fetch for analysis
   lookback_candles: 100
-
-  # Order Block detection
+  a_grade_resonances: 4           # A = 四重共振全滿足
+  b_grade_resonances: 3           # B = 三重（跳過）
   ob:
-    min_impulse_pct: 0.003        # Minimum 0.3% impulse to form OB
-    max_ob_age_candles: 50        # OB expires after 50 candles
-
-  # Fair Value Gap detection
+    min_impulse_pct: 0.003
+    max_ob_age_candles: 50
   fvg:
-    min_gap_pct: 0.001            # Minimum 0.1% gap size
-
-  # OTE (Optimal Trade Entry) Fibonacci levels
+    min_gap_pct: 0.001
   ote:
-    fib_level: 0.705              # Primary OTE level
-    fib_low: 0.62                 # OTE zone lower bound
-    fib_high: 0.79                # OTE zone upper bound
+    fib_level: 0.705
+    fib_low: 0.618
+    fib_high: 0.79
+  volume_profile:
+    bins: 50
+    value_area_pct: 0.70
 
-  # A-grade: OB + FVG + OTE all required
-  # B-grade: only 2 of 3 conditions (skip)
-  # C-grade: 1 or 0 conditions (ignore)
-  min_conditions_for_a_grade: 3
+# ── 5.4 Liquidity ────────────────────────────────────────────────
+liquidity:
+  lookback_candles: 30
+  equal_level_tolerance_pct: 0.001
+  sweep_return_candles: 3
 
-# Risk management rules
+# ── 5.5 LTF Triggers（需 ≥2 個）─────────────────────────────────
+ltf_triggers:
+  min_triggers_required: 2
+  ltf_fvg_min_gap_pct: 0.0005
+
+# ── 5.7 News & SMT ───────────────────────────────────────────────
+news:
+  block_window_hours: 4
+  events_file: "data/news_events.json"
+
+smt:
+  enabled: true
+  lookback_candles: 10
+
+# ── 風控與資金管理（8.x）─────────────────────────────────────────
 risk:
-  max_trades_per_day: 1           # Max 1 trade per day
-  stop_after_daily_loss: 1        # Stop night after N losses
-  consecutive_loss_days_limit: 2  # Stop 3 days after N consecutive losing nights
-  consecutive_loss_pause_days: 3  # Days to pause after hitting limit
-  monthly_profit_target_pct: 0.10 # +10% = stop and rest
+  max_trades_per_day: 1           # 每日最多 1 筆
+  stop_after_daily_loss: 1        # 1 筆虧損當晚停手
+  consecutive_loss_days_limit: 2  # 連續 2 晚虧損 → 停手 3 天
+  consecutive_loss_pause_days: 3
+  hard_loss_days_limit: 3         # 連續 3 晚虧損 → 停手 7 天
+  hard_loss_pause_days: 7
+  monthly_profit_target_pct: 0.10 # +10% 當月停手
 
-  # Conservative / Survival mode triggers
+  # 8.2 資金預警系統（自動停手）
+  drawdown_levels:
+    yellow_usdt: 21.0             # -30% → 停手 24H
+    yellow_pause_hours: 24
+    orange_usdt: 15.0             # -50% → 停手 3 天
+    orange_pause_days: 3
+    red_usdt: 9.0                 # -70% → 停手 7 天
+    red_pause_days: 7
+
   survival_mode:
-    enabled: false                # Start in normal mode
-    capital_threshold_usdt: 21.0  # Force survival if capital < 21 USDT
-    # Survival mode: only Silver Bullet, no other sessions
+    enabled: false
+    capital_threshold_usdt: 21.0
 
-# State persistence
+# ── 狀態 & Log ────────────────────────────────────────────────────
 state:
   file: "data/bot_state.json"
 
-# Logging
 logging:
-  level: "INFO"                   # DEBUG / INFO / WARNING / ERROR
+  level: "INFO"
   file: "data/trading_bot.log"
-  max_bytes: 10485760             # 10 MB
+  max_bytes: 10485760
   backup_count: 5

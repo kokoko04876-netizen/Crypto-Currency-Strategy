@@ -1,16 +1,18 @@
 """
-Risk management engine enforcing all rules from the strategy:
+Risk management engine — SMC 30U 紐約盤保守版 v5.3
 
-  風控規則:
-  - 每日最多 1 筆         → max_trades_per_day = 1
-  - 1 筆虧損當晚停手      → stop_after_daily_loss = 1
-  - 連續 2 晚虧損停手 3 天 → consecutive_loss_days_limit = 2, pause = 3 days
-  - 月度盈利 +10% 即停手   → monthly_profit_target_pct = 0.10
+風控規則：
+  每日最多 1 筆
+  1 筆虧損當晚停手
+  連續 2 晚虧損 → 停手 3 天
+  連續 3 晚虧損 → 停手 7 天
+  月度 +10% → 當月停手
 
-  策略 A 保守版 (生存模式):
-  - 資金 < 21 USDT 強制切換
-  - 連續虧損 2 筆後強制切換
-  - FOMC / major-news week → manual override
+資金預警（8.2）：
+  ≤ 21U → 停手 24H（黃線）
+  ≤ 15U → 停手 3 天（橘線）
+  ≤  9U → 停手 7 天（紅線）
+  =  0U → 當月停手（黑線）
 """
 from __future__ import annotations
 
@@ -21,13 +23,14 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from utils.logger import get_logger
+from utils.notifier import notify_risk_event
 
 logger = get_logger(__name__)
 
 
 @dataclass
 class DailyRecord:
-    date: str           # ISO date "YYYY-MM-DD"
+    date: str
     trades: int = 0
     wins: int = 0
     losses: int = 0
@@ -36,26 +39,21 @@ class DailyRecord:
 
 @dataclass
 class BotState:
-    # ── Persistence ───────────────────────────────────────────────────────────
     capital_usdt: float = 30.0
     monthly_start_capital: float = 30.0
     monthly_pnl_usdt: float = 0.0
     monthly_trades: int = 0
 
-    # Pause / halt state
-    paused_until: Optional[str] = None          # ISO date
+    paused_until: Optional[str] = None       # ISO date
+    paused_until_datetime: Optional[str] = None  # ISO datetime (for hour-level pauses)
     survival_mode: bool = False
 
-    # Daily tracking
-    today: str = ""                             # ISO date
+    today: str = ""
     daily_trades: int = 0
     daily_losses: int = 0
     daily_pnl_usdt: float = 0.0
 
-    # Consecutive loss nights
     consecutive_loss_nights: int = 0
-
-    # History (last 30 days)
     history: list[DailyRecord] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -80,7 +78,7 @@ class RiskManager:
         self.state = self._load_state()
         self._maybe_reset_daily()
 
-    # ── Persistence ───────────────────────────────────────────────────────────
+    # ── Persistence ───────────────────────────────────────────────
 
     def _load_state(self) -> BotState:
         if os.path.exists(self.state_file):
@@ -89,25 +87,22 @@ class RiskManager:
                     return BotState.from_dict(json.load(f))
             except Exception as e:
                 logger.warning(f"State file corrupt, resetting: {e}")
-        state = BotState(
+        return BotState(
             capital_usdt=self.trading_cfg["capital_usdt"],
             monthly_start_capital=self.trading_cfg["capital_usdt"],
         )
-        return state
 
     def save_state(self):
         with open(self.state_file, "w") as f:
             json.dump(self.state.to_dict(), f, indent=2, default=str)
-        logger.debug("State saved")
 
-    # ── Daily reset ───────────────────────────────────────────────────────────
+    # ── Daily reset ───────────────────────────────────────────────
 
     def _maybe_reset_daily(self):
         today_str = date.today().isoformat()
         if self.state.today == today_str:
             return
 
-        # Archive yesterday before resetting
         if self.state.today:
             rec = DailyRecord(
                 date=self.state.today,
@@ -117,93 +112,127 @@ class RiskManager:
                 pnl_usdt=self.state.daily_pnl_usdt,
             )
             self.state.history.append(rec)
-            # Keep only 30 days
             if len(self.state.history) > 30:
                 self.state.history = self.state.history[-30:]
 
-            # Check consecutive loss nights
+            # Track consecutive losing nights
             if self.state.daily_losses > 0 and self.state.daily_pnl_usdt < 0:
                 self.state.consecutive_loss_nights += 1
-                logger.info(
-                    f"Losing night #{self.state.consecutive_loss_nights} recorded"
-                )
+                self._apply_loss_night_rules()
             else:
                 self.state.consecutive_loss_nights = 0
 
-            # Enforce pause if consecutive loss limit hit
-            limit = self.risk_cfg["consecutive_loss_days_limit"]
-            pause_days = self.risk_cfg["consecutive_loss_pause_days"]
-            if self.state.consecutive_loss_nights >= limit:
-                pause_until = (date.today() + timedelta(days=pause_days)).isoformat()
-                self.state.paused_until = pause_until
-                self.state.consecutive_loss_nights = 0
-                logger.warning(
-                    f"PAUSED: {limit} consecutive losing nights → pause until {pause_until}"
-                )
-
-        # Reset daily counters
         self.state.today = today_str
         self.state.daily_trades = 0
         self.state.daily_losses = 0
         self.state.daily_pnl_usdt = 0.0
         self.save_state()
-        logger.info(f"Daily counters reset for {today_str}")
 
-    # ── Guard checks ──────────────────────────────────────────────────────────
+    def _apply_loss_night_rules(self):
+        nights = self.state.consecutive_loss_nights
+        hard_limit = self.risk_cfg.get("hard_loss_days_limit", 3)
+        hard_pause = self.risk_cfg.get("hard_loss_pause_days", 7)
+        soft_limit = self.risk_cfg["consecutive_loss_days_limit"]
+        soft_pause = self.risk_cfg["consecutive_loss_pause_days"]
+
+        if nights >= hard_limit:
+            pause_until = (date.today() + timedelta(days=hard_pause)).isoformat()
+            self.state.paused_until = pause_until
+            self.state.consecutive_loss_nights = 0
+            msg = f"連續 {nights} 晚虧損 → 停手 {hard_pause} 天（至 {pause_until}）"
+            logger.warning(msg)
+            notify_risk_event(f"⛔ 風控停手：{msg}")
+        elif nights >= soft_limit:
+            pause_until = (date.today() + timedelta(days=soft_pause)).isoformat()
+            self.state.paused_until = pause_until
+            self.state.consecutive_loss_nights = 0
+            msg = f"連續 {nights} 晚虧損 → 停手 {soft_pause} 天（至 {pause_until}）"
+            logger.warning(msg)
+            notify_risk_event(f"⛔ 風控停手：{msg}")
+
+    # ── Drawdown guard（8.2）──────────────────────────────────────
+
+    def _check_drawdown(self):
+        cap = self.state.capital_usdt
+        dl = self.risk_cfg.get("drawdown_levels", {})
+
+        red_usdt = dl.get("red_usdt", 9.0)
+        orange_usdt = dl.get("orange_usdt", 15.0)
+        yellow_usdt = dl.get("yellow_usdt", 21.0)
+
+        if cap <= red_usdt and cap > 0:
+            pause_days = dl.get("red_pause_days", 7)
+            until = (date.today() + timedelta(days=pause_days)).isoformat()
+            if not self.state.paused_until or self.state.paused_until < until:
+                self.state.paused_until = until
+                msg = f"🔴 紅線：資金 {cap:.2f}U ≤ {red_usdt}U → 停手 {pause_days} 天"
+                logger.warning(msg)
+                notify_risk_event(msg)
+
+        elif cap <= orange_usdt:
+            pause_days = dl.get("orange_pause_days", 3)
+            until = (date.today() + timedelta(days=pause_days)).isoformat()
+            if not self.state.paused_until or self.state.paused_until < until:
+                self.state.paused_until = until
+                msg = f"🟠 橘線：資金 {cap:.2f}U ≤ {orange_usdt}U → 停手 {pause_days} 天"
+                logger.warning(msg)
+                notify_risk_event(msg)
+
+        elif cap <= yellow_usdt:
+            pause_hours = dl.get("yellow_pause_hours", 24)
+            until_dt = (datetime.now() + timedelta(hours=pause_hours)).isoformat()
+            if not self.state.paused_until_datetime:
+                self.state.paused_until_datetime = until_dt
+                msg = f"🟡 黃線：資金 {cap:.2f}U ≤ {yellow_usdt}U → 停手 {pause_hours}H"
+                logger.warning(msg)
+                notify_risk_event(msg)
+
+        # Activation of survival mode
+        threshold = self.risk_cfg["survival_mode"]["capital_threshold_usdt"]
+        if cap < threshold and not self.state.survival_mode:
+            self.state.survival_mode = True
+            notify_risk_event(f"⚠️ 生存模式啟動：資金 {cap:.2f}U < {threshold}U")
+
+    # ── can_trade ────────────────────────────────────────────────
 
     def can_trade(self) -> tuple[bool, str]:
-        """Return (allowed, reason). Call before every potential entry."""
         self._maybe_reset_daily()
 
-        # 1. Pause / cooldown period active
+        # Hour-level pause (yellow line)
+        if self.state.paused_until_datetime:
+            until_dt = datetime.fromisoformat(self.state.paused_until_datetime)
+            if datetime.now() < until_dt:
+                return False, f"黃線停手中（至 {until_dt.strftime('%m/%d %H:%M')}）"
+            else:
+                self.state.paused_until_datetime = None
+                self.save_state()
+
+        # Day-level pause
         if self.state.paused_until:
-            pause_date = date.fromisoformat(self.state.paused_until)
-            if date.today() < pause_date:
-                return False, f"Paused until {self.state.paused_until} (consecutive losses)"
+            if date.today() < date.fromisoformat(self.state.paused_until):
+                return False, f"風控停手中（至 {self.state.paused_until}）"
             else:
                 self.state.paused_until = None
                 self.save_state()
 
-        # 2. Monthly profit target reached
-        monthly_target = self.risk_cfg["monthly_profit_target_pct"]
-        monthly_gain_pct = self.state.monthly_pnl_usdt / self.state.monthly_start_capital
-        if monthly_gain_pct >= monthly_target:
-            return False, f"Monthly profit target reached ({monthly_gain_pct:.1%} >= {monthly_target:.0%})"
+        # Monthly target
+        monthly_gain = self.state.monthly_pnl_usdt / self.state.monthly_start_capital
+        if monthly_gain >= self.risk_cfg["monthly_profit_target_pct"]:
+            return False, f"月度目標達成（{monthly_gain:.1%}）→ 當月停手"
 
-        # 3. Max trades per day
-        max_daily = self.risk_cfg["max_trades_per_day"]
-        if self.state.daily_trades >= max_daily:
-            return False, f"Daily trade limit reached ({self.state.daily_trades}/{max_daily})"
+        # Daily trade limit
+        if self.state.daily_trades >= self.risk_cfg["max_trades_per_day"]:
+            return False, f"已達每日 {self.risk_cfg['max_trades_per_day']} 筆上限"
 
-        # 4. Stop after N losses today
-        stop_after_loss = self.risk_cfg["stop_after_daily_loss"]
-        if self.state.daily_losses >= stop_after_loss:
-            return False, f"Daily loss limit reached ({self.state.daily_losses} losses)"
+        # Daily loss limit
+        if self.state.daily_losses >= self.risk_cfg["stop_after_daily_loss"]:
+            return False, f"今日已虧損 {self.state.daily_losses} 筆 → 當晚停手"
 
         return True, "OK"
 
-    # ── Survival mode check ───────────────────────────────────────────────────
-
-    def check_survival_mode(self):
-        """Evaluate whether survival mode should be activated/deactivated."""
-        threshold = self.risk_cfg["survival_mode"]["capital_threshold_usdt"]
-        if self.state.capital_usdt < threshold and not self.state.survival_mode:
-            self.state.survival_mode = True
-            logger.warning(
-                f"SURVIVAL MODE ON: capital {self.state.capital_usdt:.2f} < {threshold} USDT"
-            )
-            self.save_state()
-
-        # Also activate after 2 consecutive losses (per image: 連續虧損 2 筆後強制切換)
-        if self.state.daily_losses >= 2 and not self.state.survival_mode:
-            self.state.survival_mode = True
-            logger.warning("SURVIVAL MODE ON: 2 consecutive intraday losses")
-            self.save_state()
-
-    # ── Trade recording ───────────────────────────────────────────────────────
+    # ── Record trade ──────────────────────────────────────────────
 
     def record_trade(self, pnl_usdt: float):
-        """Call after each trade closes with realized PnL (negative = loss)."""
         self._maybe_reset_daily()
         self.state.daily_trades += 1
         self.state.monthly_trades += 1
@@ -213,36 +242,39 @@ class RiskManager:
 
         if pnl_usdt < 0:
             self.state.daily_losses += 1
-            logger.info(f"Trade LOSS: {pnl_usdt:.4f} USDT | daily_losses={self.state.daily_losses}")
-        else:
-            logger.info(f"Trade WIN:  {pnl_usdt:.4f} USDT")
 
-        self.check_survival_mode()
+        self._check_drawdown()
         self.save_state()
 
+        result = "WIN ✅" if pnl_usdt >= 0 else "LOSS ❌"
+        logger.info(
+            f"Trade {result} {pnl_usdt:+.4f} USDT | "
+            f"Capital={self.state.capital_usdt:.4f} | "
+            f"Monthly={self.state.monthly_pnl_usdt:+.4f}"
+        )
+
     def monthly_reset(self):
-        """Call at the start of each new month."""
         self.state.monthly_start_capital = self.state.capital_usdt
         self.state.monthly_pnl_usdt = 0.0
         self.state.monthly_trades = 0
-        self.state.survival_mode = False           # reset to normal at month start
+        self.state.survival_mode = False
         self.save_state()
         logger.info("Monthly stats reset")
 
-    # ── Status summary ────────────────────────────────────────────────────────
-
     def status_summary(self) -> str:
         s = self.state
-        monthly_pct = s.monthly_pnl_usdt / s.monthly_start_capital * 100 if s.monthly_start_capital else 0
-        lines = [
+        monthly_pct = (
+            s.monthly_pnl_usdt / s.monthly_start_capital * 100
+            if s.monthly_start_capital else 0
+        )
+        return "\n".join([
             f"=== Bot Status [{s.today}] ===",
             f"Capital:        {s.capital_usdt:.4f} USDT",
             f"Monthly PnL:    {s.monthly_pnl_usdt:+.4f} USDT ({monthly_pct:+.2f}%)",
             f"Monthly trades: {s.monthly_trades}",
             f"Daily trades:   {s.daily_trades}/{self.risk_cfg['max_trades_per_day']}",
             f"Daily losses:   {s.daily_losses}",
-            f"Consec. losses: {s.consecutive_loss_nights} nights",
+            f"Consec. nights: {s.consecutive_loss_nights}",
             f"Survival mode:  {'ON' if s.survival_mode else 'off'}",
-            f"Paused until:   {s.paused_until or 'N/A'}",
-        ]
-        return "\n".join(lines)
+            f"Paused until:   {s.paused_until or s.paused_until_datetime or 'N/A'}",
+        ])
